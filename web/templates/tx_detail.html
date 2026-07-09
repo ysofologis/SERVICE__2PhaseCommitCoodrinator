@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transaction {{.ID}}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>Transaction {{.ID}}</h1>
+            <nav>
+                <a href="/" class="btn">Back to Dashboard</a>
+            </nav>
+        </header>
+
+        <section>
+            <h2>Details</h2>
+            <table class="striped">
+                <tr><th>Topic</th><td>{{.TopicKey}}</td></tr>
+                <tr><th>Status</th><td class="status-{{.Status}}">{{.Status}}</td></tr>
+                <tr><th>Created</th><td>{{.CreatedAt}}</td></tr>
+                <tr><th>Updated</th><td>{{.UpdatedAt}}</td></tr>
+                {{if .DecisionAt}}<tr><th>Decision At</th><td>{{.DecisionAt}}</td></tr>{{end}}
+                {{if .DecidedBy}}<tr><th>Decided By</th><td>{{.DecidedBy}}</td></tr>{{end}}
+                {{if .Error}}<tr><th>Error</th><td>{{.Error}}</td></tr>{{end}}
+            </table>
+        </section>
+
+        <section>
+            <h2>Participants</h2>
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Vote</th>
+                        <th>Prepared</th>
+                        <th>Committed</th>
+                        <th>Aborted</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Participants}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td>{{.Vote}}</td>
+                        <td>{{if .PreparedAt}}{{.PreparedAt}}{{else}}-{{end}}</td>
+                        <td>{{if .CommittedAt}}{{.CommittedAt}}{{else}}-{{end}}</td>
+                        <td>{{if .AbortedAt}}{{.AbortedAt}}{{else}}-{{end}}</td>
+                    </tr>
+                    {{else}}
+                    <tr><td colspan="5">No participants</td></tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+
+        {{if not (or (eq .Status "COMMITTED") (eq .Status "ABORTED") (eq .Status "FAILED"))}}
+        <section>
+            <h2>Add Participant</h2>
+            <form hx-post="/transactions/{{.ID}}/participants" hx-target="body" hx-swap="outerHTML">
+                <label>Participant Name
+                    <input type="text" name="participant" required>
+                </label>
+                <label>Action
+                    <input type="text" name="action" required>
+                </label>
+                <label>Params (JSON)
+                    <textarea name="params" rows="3"></textarea>
+                </label>
+                <button type="submit" class="btn">Add Participant</button>
+            </form>
+        </section>
+        {{end}}
+    </main>
+</body>
+</html>

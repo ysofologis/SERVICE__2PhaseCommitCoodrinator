@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New Transaction</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>Create New Transaction</h1>
+            <nav>
+                <a href="/" class="btn">Back to Dashboard</a>
+            </nav>
+        </header>
+
+        <section>
+            <form hx-post="/transactions" hx-target="body" hx-swap="outerHTML">
+                <label>Topic Key
+                    <input type="text" name="topic_key" required>
+                </label>
+                <label>Timeout (ms)
+                    <input type="number" name="timeout_ms" value="10000">
+                </label>
+
+                <h3>Operations</h3>
+                <div id="operations">
+                    <div class="operation">
+                        <label>Participant
+                            <input type="text" name="participant[]" required>
+                        </label>
+                        <label>Action
+                            <input type="text" name="action[]" required>
+                        </label>
+                        <label>Params (JSON)
+                            <textarea name="params[]" rows="2"></textarea>
+                        </label>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-outline" onclick="addOperation()">Add Operation</button>
+
+                <br><br>
+                <button type="submit" class="btn">Create Transaction</button>
+            </form>
+        </section>
+    </main>
+
+    <script>
+        function addOperation() {
+            const container = document.getElementById('operations');
+            const div = document.createElement('div');
+            div.className = 'operation';
+            div.innerHTML = `
+                <label>Participant
+                    <input type="text" name="participant[]" required>
+                </label>
+                <label>Action
+                    <input type="text" name="action[]" required>
+                </label>
+                <label>Params (JSON)
+                    <textarea name="params[]" rows="2"></textarea>
+                </label>
+                <button type="button" class="btn btn-outline" onclick="this.parentElement.remove()">Remove</button>
+            `;
+            container.appendChild(div);
+        }
+    </script>
+</body>
+</html>

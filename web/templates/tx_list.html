@@ -1,0 +1,33 @@
+<table class="striped">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Topic</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Updated</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .}}
+        <tr>
+            <td><code>{{.ID}}</code></td>
+            <td>{{.TopicKey}}</td>
+            <td class="status-{{.Status}}">{{.Status}}</td>
+            <td>{{.CreatedAt}}</td>
+            <td>{{.UpdatedAt}}</td>
+            <td>
+                <a href="/tx/{{.ID}}" class="btn btn-outline">Details</a>
+                {{if not (or (eq .Status "COMMITTED") (eq .Status "ABORTED") (eq .Status "FAILED"))}}
+                <button class="btn btn-outline" hx-post="/transactions/{{.ID}}/cancel" hx-include="[name='reason']" hx-target="#tx-list">Cancel</button>
+                {{end}}
+            </td>
+        </tr>
+        {{else}}
+        <tr>
+            <td colspan="6">No transactions found</td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>

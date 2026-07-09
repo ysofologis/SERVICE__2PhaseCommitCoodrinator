@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2PC Coordinator Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        .status-COMMITTED { color: green; }
+        .status-ABORTED { color: red; }
+        .status-PREPARING { color: orange; }
+        .status-INIT { color: gray; }
+        .status-COMMITTING { color: blue; }
+        .status-ABORTING { color: darkred; }
+        .status-FAILED { color: darkred; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>2PC Coordinator Dashboard</h1>
+            <nav>
+                <a href="/" class="btn">Dashboard</a>
+                <a href="/new" class="btn">New Transaction</a>
+            </nav>
+        </header>
+
+        <section>
+            <h2>Recent Transactions</h2>
+            <div id="tx-list" hx-get="/transactions" hx-trigger="every 5s" hx-swap="outerHTML">
+                <!-- Will be populated by HTMX -->
+            </div>
+        </section>
+    </main>
+</body>
+</html>
