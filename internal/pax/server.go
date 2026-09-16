@@ -3,6 +3,7 @@ package pax
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -84,7 +85,10 @@ func (s *ParticipantServer) HandlePrepare(w http.ResponseWriter, r *http.Request
 
 	switch req.Action {
 	case "create":
-		// Create order: just mark prepared
+		// Create order: record intent, always vote yes
+		if orderID, ok := req.Params["order_id"].(string); ok {
+			deltas["orders:"+orderID] = 1 // mark order as created (pending)
+		}
 	case "authorize":
 		// Authorize payment: check balance
 		if account, ok := req.Params["account"].(string); ok {
@@ -99,13 +103,22 @@ func (s *ParticipantServer) HandlePrepare(w http.ResponseWriter, r *http.Request
 			}
 		}
 	case "reserve":
-		// Reserve inventory: always yes for now
+		// Reserve inventory: check if item is available
 		if item, ok := req.Params["item"].(string); ok {
-			// In a real system, we'd check inventory levels
-			_ = item
+			qty, _ := req.Params["qty"].(float64)
+			q := int64(qty)
+			// Simulate inventory check: always available for demo
+			// In production, check actual inventory levels
+			if q <= 0 {
+				vote = false
+				reason = "invalid quantity"
+			} else {
+				deltas["inventory:"+item] = -q // pending reservation
+			}
 		}
 	default:
-		// Unknown action, but we'll still vote yes for demo
+		// Unknown action: vote yes but log warning
+		log.Printf("participant: unknown action %q for tx %s", req.Action, req.TxID)
 	}
 
 	if !vote {

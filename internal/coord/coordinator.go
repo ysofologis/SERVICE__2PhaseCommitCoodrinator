@@ -15,6 +15,13 @@ import (
 	"github.com/modelgrok/2phasecommit/internal/txnlog"
 )
 
+var (
+	ErrTransactionAborted = errors.New("transaction aborted")
+	ErrTransactionTimeout = errors.New("transaction timed out")
+	ErrTransactionNotFound = errors.New("transaction not found")
+	ErrTransactionTerminal = errors.New("transaction already in terminal state")
+)
+
 type Coordinator struct {
 	log          txnlog.Log
 	mu           sync.RWMutex
@@ -64,6 +71,42 @@ func GenerateTransactionID(topicKey string) (string, error) {
 		return "", fmt.Errorf("generate salt: %w", err)
 	}
 	return fmt.Sprintf("tx_%s-%s", topicKey, hex.EncodeToString(salt)), nil
+}
+
+// WaitForTerminal blocks until the transaction reaches a terminal state or the deadline expires.
+// Returns the transaction with votes, or an error if aborted/timeout/not-found.
+func (c *Coordinator) WaitForTerminal(ctx context.Context, txID string, timeout time.Duration) (*txnlog.TransactionWithVotes, error) {
+	c.mu.RLock()
+	handle, ok := c.inFlight[txID]
+	c.mu.RUnlock()
+
+	if !ok {
+		tx, err := c.log.GetTransaction(ctx, txID)
+		if err != nil {
+			if errors.Is(err, txnlog.ErrNotFound) {
+				return nil, ErrTransactionNotFound
+			}
+			return nil, fmt.Errorf("get transaction: %w", err)
+		}
+		if IsTerminal(State(tx.Status)) {
+			return tx, nil
+		}
+		return nil, fmt.Errorf("transaction not in flight and not terminal: %s", tx.Status)
+	}
+
+	select {
+	case <-handle.done:
+		tx, err := c.log.GetTransaction(ctx, txID)
+		if err != nil {
+			return nil, fmt.Errorf("get final transaction: %w", err)
+		}
+		if tx.Status == string(StateAborted) || tx.Status == string(StateFailed) {
+			return tx, ErrTransactionAborted
+		}
+		return tx, nil
+	case <-ctx.Done():
+		return nil, ErrTransactionTimeout
+	}
 }
 
 // StartTransaction begins a new distributed transaction or returns existing in-flight

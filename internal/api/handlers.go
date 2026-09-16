@@ -16,7 +16,7 @@ import (
 
 type Handler struct {
 	coordinator *coord.Coordinator
-	participants map[string]pax.ParticipantClient // name -> client
+	participants map[string]pax.ParticipantClient
 	templates   *template.Template
 }
 
@@ -29,7 +29,6 @@ func NewHandler(coordinator *coord.Coordinator) *Handler {
 	}
 }
 
-// RegisterParticipant adds a participant client for the coordinator to use
 func (h *Handler) RegisterParticipant(name, baseURL string) {
 	h.participants[name] = pax.NewHTTPClient(baseURL)
 }
@@ -39,17 +38,22 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
-	// TODO: check DB connectivity
+	ctx := r.Context()
+	// Check DB connectivity by listing transactions (cheap query)
+	_, err := h.coordinator.ListTransactions(ctx, 1, 0)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not ready", "error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	var req CreateTransactionRequest
-	var err error
+	syncMode := r.URL.Query().Get("sync") == "true"
 
 	// Support both JSON and form data
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Content-Type") == "multipart/form-data" {
-		// Parse form data
 		if err := r.ParseForm(); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid form: %v", err))
 			return
@@ -65,16 +69,22 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 		for i := 0; i < n; i++ {
 			var p map[string]interface{}
 			if i < len(params) && params[i] != "" {
-				json.Unmarshal([]byte(params[i]), &p)
+				if jsonErr := json.Unmarshal([]byte(params[i]), &p); jsonErr != nil {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid params JSON for operation %d: %v", i, jsonErr))
+					return
+				}
 			}
-		req.Operations = append(req.Operations, Operation{
-			Participant: participants[i],
-			Action:      actions[i],
-			Params:      p,
-		})
+			action := ""
+			if i < len(actions) {
+				action = actions[i]
+			}
+			req.Operations = append(req.Operations, Operation{
+				Participant: participants[i],
+				Action:      action,
+				Params:      p,
+			})
 		}
 	} else {
-		// JSON body
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 			return
@@ -113,16 +123,46 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	txID, err := h.coordinator.StartTransaction(ctx, req.TopicKey, ops, timeoutMs)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start transaction: %v", err))
+	txID, startErr := h.coordinator.StartTransaction(ctx, req.TopicKey, ops, timeoutMs)
+	if startErr != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start transaction: %v", startErr))
 		return
 	}
 
-	// Get the transaction to return current state
-	tx, err := h.coordinator.GetTransaction(ctx, txID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get transaction: %v", err))
+	if syncMode {
+		// Blocking: wait for terminal state
+		tx, pollErr := h.coordinator.WaitForTerminal(ctx, txID, time.Duration(timeoutMs)*time.Millisecond)
+		if pollErr != nil {
+			if pollErr == coord.ErrTransactionAborted {
+				writeJSON(w, http.StatusUnprocessableEntity, TransactionResponse{
+					ID:       txID,
+					Status:   "ABORTED",
+					TopicKey: req.TopicKey,
+					Error:    strPtr("transaction aborted"),
+				})
+				return
+			}
+			if pollErr == coord.ErrTransactionTimeout {
+				writeJSON(w, http.StatusRequestTimeout, TransactionResponse{
+					ID:       txID,
+					Status:   "FAILED",
+					TopicKey: req.TopicKey,
+					Error:    strPtr("transaction timed out"),
+				})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to wait for transaction: %v", pollErr))
+			return
+		}
+		resp := transactionToResponse(tx)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Async: return 202 immediately
+	tx, getErr := h.coordinator.GetTransaction(ctx, txID)
+	if getErr != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get transaction: %v", getErr))
 		return
 	}
 
@@ -149,45 +189,7 @@ func (h *Handler) GetTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := TransactionResponse{
-		ID:        tx.ID,
-		TopicKey:  tx.TopicKey,
-		Status:    tx.Status,
-		CreatedAt: tx.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: tx.UpdatedAt.Format(time.RFC3339),
-	}
-	if tx.DecisionAt != nil {
-		da := tx.DecisionAt.Format(time.RFC3339)
-		resp.DecisionAt = &da
-	}
-	if tx.DecidedBy != "" {
-		resp.DecidedBy = &tx.DecidedBy
-	}
-	if tx.Error != "" {
-		resp.Error = &tx.Error
-	}
-
-	// Build participants array
-	for _, v := range tx.Votes {
-		ps := ParticipantStatus{
-			Name: v.Participant,
-			Vote: v.Vote,
-		}
-		if v.PreparedAt != nil {
-			pa := v.PreparedAt.Format(time.RFC3339)
-			ps.PreparedAt = &pa
-		}
-		if v.CommittedAt != nil {
-			ca := v.CommittedAt.Format(time.RFC3339)
-			ps.CommittedAt = &ca
-		}
-		if v.AbortedAt != nil {
-			aa := v.AbortedAt.Format(time.RFC3339)
-			ps.AbortedAt = &aa
-		}
-		resp.Participants = append(resp.Participants, ps)
-	}
-
+	resp := transactionToResponse(tx)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -213,28 +215,9 @@ func (h *Handler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is an HTMX request (for dashboard refresh)
 	if r.Header.Get("HX-Request") == "true" {
-		// Return just the table rows for HTMX
-		type TxView struct {
-			ID        string `json:"id"`
-			TopicKey  string `json:"topic_key"`
-			Status    string `json:"status"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-		}
-		var view []TxView
-		for _, tx := range txs {
-			view = append(view, TxView{
-				ID:        tx.ID,
-				TopicKey:  tx.TopicKey,
-				Status:    tx.Status,
-				CreatedAt: tx.CreatedAt.Format("2006-01-02 15:04:05"),
-				UpdatedAt: tx.UpdatedAt.Format("2006-01-02 15:04:05"),
-			})
-		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		h.templates.ExecuteTemplate(w, "tx_list.html", view)
+		h.templates.ExecuteTemplate(w, "tx_list.html", txs)
 		return
 	}
 
@@ -269,30 +252,36 @@ func (h *Handler) AddParticipant(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if err := h.coordinator.AddParticipant(ctx, id, op); err != nil {
+		if err.Error() == "cannot add participant in state" {
+			writeError(w, http.StatusConflict, fmt.Sprintf("cannot add participant: transaction not in PREPARING state"))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to add participant: %v", err))
 		return
 	}
 
-	// Return updated transaction
 	tx, err := h.coordinator.GetTransaction(ctx, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get transaction: %v", err))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tx)
+	writeJSON(w, http.StatusOK, transactionToResponse(tx))
 }
 
 func (h *Handler) CancelTransaction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var req CancelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
-		return
-	}
 
 	ctx := r.Context()
 	if err := h.coordinator.CancelTransaction(ctx, id); err != nil {
+		if err.Error() == "transaction already in terminal state" {
+			writeError(w, http.StatusConflict, "transaction already in terminal state")
+			return
+		}
+		if err.Error() == "transaction not found" {
+			writeError(w, http.StatusNotFound, "transaction not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to cancel transaction: %v", err))
 		return
 	}
@@ -303,7 +292,6 @@ func (h *Handler) CancelTransaction(w http.ResponseWriter, r *http.Request) {
 // HTMX frontend handlers
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	// Fetch recent transactions
 	ctx := r.Context()
 	txs, err := h.coordinator.ListTransactions(ctx, 50, 0)
 	if err != nil {
@@ -311,7 +299,6 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to template-friendly format
 	type TxView struct {
 		ID        string `json:"id"`
 		TopicKey  string `json:"topic_key"`
@@ -348,7 +335,6 @@ func (h *Handler) TxDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to template-friendly format
 	type ParticipantView struct {
 		Name        string  `json:"name"`
 		Vote        string  `json:"vote"`
@@ -419,3 +405,51 @@ func (h *Handler) NewTxForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.templates.ExecuteTemplate(w, "new_tx.html", nil)
 }
+
+func transactionToResponse(tx *txnlog.TransactionWithVotes) TransactionResponse {
+	resp := TransactionResponse{
+		ID:        tx.ID,
+		TopicKey:  tx.TopicKey,
+		Status:    tx.Status,
+		CreatedAt: tx.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: tx.UpdatedAt.Format(time.RFC3339),
+	}
+	if tx.DecisionAt != nil {
+		da := tx.DecisionAt.Format(time.RFC3339)
+		resp.DecisionAt = &da
+	}
+	if tx.DecidedBy != "" {
+		resp.DecidedBy = &tx.DecidedBy
+	}
+	if tx.Error != "" {
+		resp.Error = &tx.Error
+	}
+	resp.Phases = map[string]string{
+		"prepare": "ok",
+		"commit":  "ok",
+	}
+	for _, v := range tx.Votes {
+		ps := ParticipantStatus{
+			Name: v.Participant,
+			Vote: v.Vote,
+		}
+		if v.PreparedAt != nil {
+			pa := v.PreparedAt.Format(time.RFC3339)
+			ps.PreparedAt = &pa
+		}
+		if v.CommittedAt != nil {
+			ca := v.CommittedAt.Format(time.RFC3339)
+			ps.CommittedAt = &ca
+			ps.Final = "committed"
+		}
+		if v.AbortedAt != nil {
+			aa := v.AbortedAt.Format(time.RFC3339)
+			ps.AbortedAt = &aa
+			ps.Final = "aborted"
+		}
+		resp.Participants = append(resp.Participants, ps)
+	}
+	return resp
+}
+
+func strPtr(s string) *string { return &s }
