@@ -32,8 +32,9 @@ internal/
     sqlite.go             # SQLite implementation
   metrics/metrics.go      # Prometheus metrics
 web/templates/            # HTMX-powered frontend
-clients/                  # Sample participants — future implementations
-    PLAN.md               # Design doc: C# + Python trading-platform participants
+clients/                  # End-user-facing desktop client (proof-of-coordinator)
+    PLAN.md               # Design doc: AvaloniaUI 11 .NET 8 trading client
+    avalonia/             # (future) dotnet project — see clients/PLAN.md
 ```
 
 ---
@@ -327,37 +328,33 @@ Known gaps:
 
 ---
 
-## Planned Clients: Concurrent Order Submission (Trading Platform)
+## Planned Clients: AvaloniaUI 2PC Trading Client
 
 **See `clients/PLAN.md`** for the full specification.
 
 ### Scenario
 
-Two end-users simultaneously submit buy orders for the same security (e.g., both buying AAPL). Without coordination, concurrent writes to the shared order-book tables can over-sell inventory (shadow-write race condition).
+A cross-platform .NET 8 / AvaloniaUI 11 desktop client lets a single user (or two users in two windows) place buy/sell orders against the existing 2PC coordinator. The app renders the 2-phase commit lifecycle in real time and includes a "Race Demo" modal that drives two simultaneous transactions against a scarce security to prove the coordinator prevents the over-selling race condition.
 
 ### Architecture
 
-Both users' requests flow through the coordinator, which serializes them as a single 2PC transaction:
-
 ```
-User A ──► intent ───┐
-                      ├─► Coordinator ◄─ serialize ─► 2PC
-User B ──► intent ───┘
-                         Prepare
-                        ┌────┴────┐
-                        ▼         ▼
-                   accounts-db   orderbook-db
-                   (C#/.NET)     (Python/FastAPI)
-                        │          │
-                        │ Vote yes/no
-                        └────┬────┘
-                     Commit / Abort
+            ┌─────────────────────────────────────────────┐
+            │  AvaloniaUI 11 desktop client (.NET 8)        │
+            │   Views ⇄ ViewModels ⇄ CoordinatorClient      │
+            └─────────────────┬────────────────────────────┘
+                              │ HttpClient / JSON
+                              ▼
+                ┌─────────────────────────────┐
+                │  2PC Coordinator (Go)       │
+                └────────────┬────────────────┘
+                             │ HTTP/JSON
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+     accounts-svc (Go)            inventory-svc (Go)
 ```
 
-| Participant | Language | DB | Responsibility |
-|-------------|----------|----|----------------|
-| **accounts** | C# (.NET 8 + Dapper) | SQLite | Balance checks, fund holds |
-| **orderbook** | Python (FastAPI + aiosqlite) | SQLite | Share availability, order placement |
+Unlike the earlier cross-language participants plan, this client does **not** implement new protocol participants. The Go sample participant (`cmd/participant`) is the only participant in the system. The C# code is a thin client wrapper plus a visual proof of correctness.
 
 ### Key Mechanism
 
