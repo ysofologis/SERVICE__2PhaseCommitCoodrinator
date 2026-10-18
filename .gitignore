@@ -68,3 +68,10 @@ coverage.out
 
 # Go build cache (usually in GOPATH, but just in case)
 .cover/
+
+# AvaloniaUI .NET 8 client (clients/avalonia/)
+clients/avalonia/src/*/bin/
+clients/avalonia/src/*/obj/
+clients/avalonia/tests/*/bin/
+clients/avalonia/tests/*/obj/
+clients/avalonia/.vs/

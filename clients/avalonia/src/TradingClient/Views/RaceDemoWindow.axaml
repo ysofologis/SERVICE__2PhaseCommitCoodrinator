@@ -1,0 +1,62 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:TradingClient.ViewModels"
+        x:Class="TradingClient.Views.RaceDemoWindow"
+        x:DataType="vm:RaceDemoViewModel"
+        Title="Race Demo — Concurrent Buy on the Same Scarce Security"
+        Width="520" Height="440"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+
+    <StackPanel Margin="20" Spacing="14">
+        <TextBlock Text="Race Demo" FontSize="18" FontWeight="Bold"/>
+        <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12">
+            Fires two simultaneous buy orders on the same scarce security.
+            Exactly one should commit; the other should abort with reason.
+            If both commit, the coordinator has a bug.
+        </TextBlock>
+
+        <Grid ColumnDefinitions="*,12,*">
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Ticker" FontSize="12" Opacity="0.7"/>
+                <TextBox Text="{Binding Ticker}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Quantity" FontSize="12" Opacity="0.7"/>
+                <NumericUpDown Value="{Binding Quantity}" Minimum="1" Maximum="100000" HorizontalAlignment="Stretch"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,12,*">
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Price" FontSize="12" Opacity="0.7"/>
+                <NumericUpDown Value="{Binding Price}" Minimum="0.01" Maximum="100000"
+                               FormatString="C2" HorizontalAlignment="Stretch"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Account" FontSize="12" Opacity="0.7"/>
+                <TextBox Text="{Binding Account}"/>
+            </StackPanel>
+        </Grid>
+
+        <Button Content="Start both"
+                Command="{Binding RunCommand}"
+                IsEnabled="{Binding !IsRunning}"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Center"
+                Padding="0,10"/>
+
+        <Border Padding="12"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                CornerRadius="4">
+            <StackPanel Spacing="6">
+                <TextBlock Text="{Binding ResultA}" FontFamily="Consolas, Menlo, monospace" FontSize="12"/>
+                <TextBlock Text="{Binding ResultB}" FontFamily="Consolas, Menlo, monospace" FontSize="12"/>
+                <TextBlock Text="{Binding WinnerLabel}"
+                           FontWeight="SemiBold"
+                           TextWrapping="Wrap"
+                           Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</Window>

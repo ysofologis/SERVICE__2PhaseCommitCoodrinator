@@ -1,0 +1,55 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:TradingClient.ViewModels"
+             xmlns:views="using:TradingClient.Views"
+             xmlns:models="clr-namespace:TradingClient.Models"
+             x:Class="TradingClient.Views.OrderListView"
+             x:DataType="vm:OrderListViewModel">
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                Padding="12,6">
+            <DockPanel>
+                <TextBlock Text="Orders"
+                           FontWeight="Bold"
+                           DockPanel.Dock="Left"
+                           VerticalAlignment="Center"/>
+                <TextBlock Margin="8,0,0,0"
+                           Text="{Binding Orders.Count, StringFormat=' ({0})'}"
+                           VerticalAlignment="Center"
+                           Opacity="0.7"/>
+            </DockPanel>
+        </Border>
+
+        <ListBox ItemsSource="{Binding Orders}"
+                 SelectedItem="{Binding SelectedOrder, Mode=TwoWay}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+                <DataTemplate DataType="models:Transaction" x:DataType="models:Transaction">
+                    <Border Padding="10,6" BorderThickness="0,0,0,1"
+                            BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock Text="{Binding TopicKey}"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding StatusRaw}"
+                                           FontSize="11"
+                                           Padding="6,2"
+                                           Margin="6,0,0,0"
+                                           Foreground="White"
+                                           Background="{Binding Status, Converter={x:Static views:StatusToBrushConverter.Instance}}"/>
+                            </DockPanel>
+                            <TextBlock Text="{Binding Id}"
+                                       FontSize="11"
+                                       Opacity="0.6"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</UserControl>

@@ -1,0 +1,68 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:TradingClient.ViewModels"
+        x:Class="TradingClient.Views.PlaceOrderWindow"
+        x:DataType="vm:PlaceOrderViewModel"
+        Title="Place Order"
+        Width="420" Height="520"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+
+    <StackPanel Margin="20" Spacing="12">
+        <TextBlock Text="Place Order" FontSize="18" FontWeight="Bold"/>
+
+        <StackPanel>
+            <TextBlock Text="Ticker" FontSize="12" Opacity="0.7"/>
+            <ComboBox ItemsSource="{Binding Tickers}" SelectedItem="{Binding Ticker}" HorizontalAlignment="Stretch"/>
+        </StackPanel>
+
+        <Grid ColumnDefinitions="*,12,*">
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Side" FontSize="12" Opacity="0.7"/>
+                <ComboBox ItemsSource="{Binding Sides}" SelectedItem="{Binding Side}" HorizontalAlignment="Stretch"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Quantity" FontSize="12" Opacity="0.7"/>
+                <NumericUpDown Value="{Binding Quantity}" Minimum="1" Maximum="100000" HorizontalAlignment="Stretch"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,12,*">
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Price" FontSize="12" Opacity="0.7"/>
+                <NumericUpDown Value="{Binding Price}" Minimum="0.01" Maximum="100000"
+                               FormatString="C2" HorizontalAlignment="Stretch"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Account" FontSize="12" Opacity="0.7"/>
+                <TextBox Text="{Binding Account}"/>
+            </StackPanel>
+        </Grid>
+
+        <StackPanel>
+            <TextBlock Text="Timeout (ms)" FontSize="12" Opacity="0.7"/>
+            <NumericUpDown Value="{Binding TimeoutMs}" Minimum="100" Maximum="60000" HorizontalAlignment="Stretch"/>
+        </StackPanel>
+
+        <CheckBox Content="Synchronous (?sync=true — block until terminal)"
+                  IsChecked="{Binding UseSync}"/>
+
+        <Button Content="Submit"
+                Command="{Binding SubmitCommand}"
+                IsEnabled="{Binding !IsSubmitting}"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Center"
+                Padding="0,8"/>
+
+        <TextBlock Text="{Binding ResultMessage}"
+                   FontFamily="Consolas, Menlo, monospace"
+                   FontSize="12"
+                   TextWrapping="Wrap"/>
+
+        <TextBlock Text="{Binding LastTransactionId, StringFormat='tx: {0}'}"
+                   FontFamily="Consolas, Menlo, monospace"
+                   FontSize="11"
+                   Opacity="0.6"
+                   TextWrapping="Wrap"/>
+    </StackPanel>
+</Window>

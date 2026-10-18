@@ -1,0 +1,125 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:TradingClient.ViewModels"
+             xmlns:views="using:TradingClient.Views"
+             xmlns:models="clr-namespace:TradingClient.Models"
+             x:Class="TradingClient.Views.OrderDetailView"
+             x:DataType="vm:OrderDetailViewModel">
+
+    <Grid>
+        <!-- Empty state -->
+        <TextBlock Text="← Select an order to see its 2PC lifecycle"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Opacity="0.5"
+                   FontSize="14"
+                   IsVisible="{Binding Current, Converter={x:Static views:NullToBoolConverter.Instance}}"/>
+
+        <!-- Detail content -->
+        <ScrollViewer IsVisible="{Binding Current, Converter={x:Static views:NotNullToBoolConverter.Instance}}">
+            <StackPanel Margin="16" Spacing="12">
+                <!-- Header -->
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{Binding Current.TopicKey}"
+                               FontSize="18" FontWeight="Bold"/>
+                    <DockPanel>
+                        <Border DockPanel.Dock="Left"
+                                Padding="8,3"
+                                CornerRadius="3"
+                                Background="{Binding Current.Status, Converter={x:Static views:StatusToBrushConverter.Instance}}">
+                            <TextBlock Text="{Binding Current.StatusRaw}"
+                                       Foreground="White"
+                                       FontWeight="SemiBold"
+                                       FontSize="12"/>
+                        </Border>
+                        <TextBlock Margin="12,0,0,0"
+                                   Text="{Binding Current.Id}"
+                                   FontFamily="Consolas, Menlo, monospace"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Opacity="0.7"/>
+                    </DockPanel>
+                </StackPanel>
+
+                <!-- Timeline -->
+                <Border Padding="12"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                        CornerRadius="4">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="TIMELINE" FontWeight="Bold" FontSize="11" Opacity="0.7"/>
+                        <ItemsControl ItemsSource="{Binding Current, Converter={x:Static views:TimelineConverter.Instance}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="views:TimelineNode" x:DataType="views:TimelineNode">
+                                    <DockPanel Margin="0,2">
+                                        <TextBlock Text="{Binding Label}"
+                                                   Width="110"
+                                                   Opacity="0.7"
+                                                   FontSize="12"/>
+                                        <TextBlock Text="{Binding At, StringFormat='HH:mm:ss'}"
+                                                   FontFamily="Consolas, Menlo, monospace"
+                                                   FontSize="12"/>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- Participants -->
+                <Border Padding="12"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                        CornerRadius="4">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="PARTICIPANTS" FontWeight="Bold" FontSize="11" Opacity="0.7"/>
+                        <ItemsControl ItemsSource="{Binding Current.Participants}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="models:Participant" x:DataType="models:Participant">
+                                    <Grid ColumnDefinitions="180,80,100,*">
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Vote, StringFormat='vote: {0}'}"
+                                                   Opacity="0.8"/>
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding Final, StringFormat='→ {0}'}"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding Reason}"
+                                                   TextWrapping="Wrap"
+                                                   Opacity="0.6"
+                                                   FontSize="11"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- Phases -->
+                <Border Padding="12"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                        CornerRadius="4"
+                        IsVisible="{Binding Current.Phases, Converter={x:Static views:NotNullToBoolConverter.Instance}}">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="PHASES" FontWeight="Bold" FontSize="11" Opacity="0.7"/>
+                        <TextBlock>
+                            <Run Text="prepare: "/>
+                            <Run Text="{Binding Current.Phases.Prepare}" FontWeight="SemiBold"/>
+                        </TextBlock>
+                        <TextBlock>
+                            <Run Text="commit:  "/>
+                            <Run Text="{Binding Current.Phases.Commit}" FontWeight="SemiBold"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!-- Error message -->
+                <Border Padding="12"
+                        Background="#5a1d1d"
+                        CornerRadius="4"
+                        IsVisible="{Binding LastError, Converter={x:Static views:NotNullToBoolConverter.Instance}}">
+                    <TextBlock Text="{Binding LastError}" Foreground="#ffaaaa"/>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>
