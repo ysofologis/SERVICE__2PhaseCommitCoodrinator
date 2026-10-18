@@ -3,7 +3,9 @@
 A cross-platform .NET 8 desktop app that drives the Go 2PC coordinator
 and proves its correctness **from the end-user's seat**.
 
-See [`../PLAN.md`](../PLAN.md) for the full design rationale.
+- **For end-users** (place orders, run the race demo, read the
+  detail pane): see **[`HOWTO.md`](HOWTO.md)**.
+- **For the design rationale**: see [`../PLAN.md`](../PLAN.md).
 
 ## What it does
 
@@ -46,8 +48,9 @@ dotnet run --project src/TradingClient
 
 ## Run the race demo
 
-1. Make sure the participant has fresh state: (no `POST /admin/reset`
-   endpoint yet — restart the participant process for now).
+1. Click **Dev tools** in the bottom action bar, then **Reset demo
+   data** to re-seed the participants' in-memory state via
+   `POST /admin/reset`.
 2. Click "Race demo" in the bottom action bar.
 3. Click "Start both".
 4. One side should show `COMMITTED` (green), the other `ABORTED` (red)
