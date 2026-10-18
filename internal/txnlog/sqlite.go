@@ -200,6 +200,35 @@ func (l *SQLiteLog) RecordVote(ctx context.Context, txID, participant, vote, rea
 	return fmt.Errorf("upsert vote after retries: %w", err)
 }
 
+func (l *SQLiteLog) RecordOutcome(ctx context.Context, txID, participant, outcome string, ts time.Time) error {
+	// Update only the timestamp column matching the outcome. Keep the
+	// votes.vote column as-is so the original vote (yes/no/timeout) is
+	// preserved. We deliberately don't touch the reason column.
+	col := "aborted_at"
+	if outcome == "committed" {
+		col = "committed_at"
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = l.db.ExecContext(
+			ctx,
+			`UPDATE votes SET `+col+` = ? WHERE tx_id = ? AND participant = ?`,
+			ts, txID, participant,
+		)
+		if err == nil {
+			return nil
+		}
+		if strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "SQLITE_BUSY") {
+			if attempt < 2 {
+				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+				continue
+			}
+		}
+		return fmt.Errorf("record outcome: %w", err)
+	}
+	return fmt.Errorf("record outcome after retries: %w", err)
+}
+
 func (l *SQLiteLog) GetTransaction(ctx context.Context, id string) (*TransactionWithVotes, error) {
 	tx := &Transaction{}
 	err := l.db.QueryRowContext(

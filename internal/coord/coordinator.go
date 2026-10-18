@@ -172,7 +172,18 @@ func (c *Coordinator) StartTransaction(ctx context.Context, topicKey string, ops
 	return txID, nil
 }
 
-// AddParticipant adds a new participant to an in-progress transaction (only allowed in PREPARING)
+// AddParticipant adds a new participant to an in-progress transaction (only allowed in PREPARING).
+//
+// The new participant is appended to the in-memory participants list. The
+// runTransaction loop, which is iterating on that list, will see the growth
+// and start a new prepare round that includes the new participant. The
+// caller is NOT blocked: the prepare is performed by runTransaction's own
+// goroutines, not synchronously here. This avoids double-prepare races and
+// keeps the commit decision centralized in runTransaction.
+//
+// Returns nil once the participant is registered. The actual vote result is
+// observable via GetTransaction or by waiting for the transaction to reach
+// a terminal state.
 func (c *Coordinator) AddParticipant(ctx context.Context, txID string, op ParticipantOp) error {
 	c.mu.Lock()
 	handle, ok := c.inFlight[txID]
@@ -186,63 +197,33 @@ func (c *Coordinator) AddParticipant(ctx context.Context, txID string, op Partic
 		return fmt.Errorf("cannot add participant in state %s", handle.state)
 	}
 
-	// Add to participants list
-	handle.participants = append(handle.participants, op)
-
-	// Immediately send prepare to the new participant
+	// Refuse cancellation in progress: once cancel is signalled, the
+	// transaction is heading to ABORT and adding more voters is pointless.
 	select {
 	case <-handle.cancel:
 		return errors.New("transaction is cancelling")
 	default:
-		// continue
 	}
 
-	// Prepare this participant
-	vote, reason, err := op.Client.Prepare(ctx, txID, op.Action, op.Params)
-	if err != nil {
-		// Record vote as timeout/no and trigger abort
-		handle.mu.Lock()
-		handle.votes[op.Name] = voteInfo{
-			Vote: "timeout",
-			Reason: fmt.Sprintf("prepare error: %v", err),
-			At: time.Now().UTC(),
+	// Add to participants list. runTransaction's loop will see this on
+	// its next snapshot and run a prepare round that includes the new
+	// participant.
+	handle.mu.Lock()
+	for _, existing := range handle.participants {
+		if existing.Name == op.Name {
+			handle.mu.Unlock()
+			return fmt.Errorf("participant %q already in transaction", op.Name)
 		}
-		handle.mu.Unlock()
-
-		// Trigger abort
-		go c.abortTransaction(ctx, handle, "add-participant-failure")
-		return fmt.Errorf("prepare failed for new participant %s: %w", op.Name, err)
 	}
-
-	handle.mu.Lock()
-	handle.votes[op.Name] = voteInfo{
-		Vote:   map[bool]string{true: "yes", false: "no"}[vote],
-		Reason: reason,
-		At:    time.Now().UTC(),
-	}
+	handle.participants = append(handle.participants, op)
 	handle.mu.Unlock()
-
-	if !vote {
-		// Trigger abort
-		go c.abortTransaction(ctx, handle, "participant-voted-no")
-		return fmt.Errorf("participant %s voted no: %s", op.Name, reason)
-	}
-
-	// Check if all participants have voted yes
-	handle.mu.Lock()
-	allYes := len(handle.votes) == len(handle.participants)
-	handle.mu.Unlock()
-
-	if allYes {
-		// Transition to COMMITTING
-		c.transitionState(handle, StateCommitting)
-		go c.commitTransaction(ctx, handle)
-	}
 
 	return nil
 }
 
-// CancelTransaction initiates cancellation of a non-terminal transaction
+// CancelTransaction initiates cancellation of a non-terminal transaction.
+// It only signals cancellation; the actual abort path is owned by runTransaction
+// (or recovery) so we don't double-abort and race with the in-flight protocol.
 func (c *Coordinator) CancelTransaction(ctx context.Context, txID string) error {
 	c.mu.Lock()
 	handle, ok := c.inFlight[txID]
@@ -256,7 +237,10 @@ func (c *Coordinator) CancelTransaction(ctx context.Context, txID string) error 
 		return fmt.Errorf("transaction already in terminal state: %s", handle.state)
 	}
 
-	// Signal cancellation
+	// Signal cancellation. runTransaction (if still alive) observes this and
+	// takes the abort path on its own. If runTransaction has already returned
+	// (transaction is terminal in the in-memory handle but handle hasn't been
+	// removed yet), the abort goroutine below covers that case.
 	select {
 	case <-handle.cancel:
 		// Already cancelled
@@ -264,11 +248,21 @@ func (c *Coordinator) CancelTransaction(ctx context.Context, txID string) error 
 		close(handle.cancel)
 	}
 
+	// Trigger abort path asynchronously; runTransaction may also call abort
+	// if it observes the cancellation, but abortTransaction is idempotent on
+	// state (transitionState is a write, double-transition is harmless for
+	// the in-memory state and the last writer wins on the log).
 	go c.abortTransaction(ctx, handle, "operator-cancelled")
 	return nil
 }
 
-// runTransaction executes the 2PC protocol for a transaction
+// runTransaction executes the 2PC protocol for a transaction.
+//
+// It loops: each round snapshots the current participants, sends prepare in
+// parallel, waits for all to return, then either aborts (any error) or —
+// if all voted yes and no new participants were added during the round —
+// commits. If new participants arrived mid-round (via AddParticipant), it
+// re-iterates so they get a vote before the commit decision is made.
 func (c *Coordinator) runTransaction(ctx context.Context, handle *txHandle, timeoutMs int) {
 	startTime := time.Now()
 	defer func() {
@@ -284,99 +278,290 @@ func (c *Coordinator) runTransaction(ctx context.Context, handle *txHandle, time
 	// Transition to PREPARING
 	c.transitionState(handle, StatePreparing)
 
-	// Phase 1: Prepare (parallel)
+	// Phase 1: Prepare (parallel), repeated for dynamic additions
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	// Snapshot participants list to avoid data races if AddParticipant is called concurrently
-	handle.mu.Lock()
-	participants := make([]ParticipantOp, len(handle.participants))
-	copy(participants, handle.participants)
-	handle.mu.Unlock()
+	// Track which participants have already voted in any round. Once a
+	// participant has voted, we don't re-send prepare to them — the only
+	// way to "re-ask" is via AddParticipant, which always uses a fresh
+	// participant entry. (Existing vote entries are preserved across
+	// rounds.)
+	for {
+		// Re-check cancellation: if handle.cancel was closed before we
+		// even started the loop, abort immediately.
+		select {
+		case <-handle.cancel:
+			c.abortTransaction(timeoutCtx, handle, "cancelled-before-prepare")
+			return
+		default:
+		}
 
-	// Send prepare to all participants concurrently with WaitGroup
-	var wg sync.WaitGroup
-	var errMu sync.Mutex
-	var prepareErrs []error
-
-	for _, op := range participants {
-		wg.Add(1)
-		go func(op ParticipantOp) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("panic in prepare for %s: %v", op.Name, r)
-					metrics.RecordError("prepare_panic")
-					errMu.Lock()
-					prepareErrs = append(prepareErrs, fmt.Errorf("panic in prepare for %s: %v", op.Name, r))
-					errMu.Unlock()
-				}
-			}()
-
-			select {
-			case <-handle.cancel:
-				errMu.Lock()
-				prepareErrs = append(prepareErrs, errors.New("cancelled"))
-				errMu.Unlock()
-				return
-			case <-timeoutCtx.Done():
-				errMu.Lock()
-				prepareErrs = append(prepareErrs, fmt.Errorf("prepare timeout"))
-				errMu.Unlock()
-				return
-			default:
-				vote, reason, err := op.Client.Prepare(timeoutCtx, handle.tx.ID, op.Action, op.Params)
-				if err != nil {
-					errMu.Lock()
-					prepareErrs = append(prepareErrs, fmt.Errorf("prepare error: %w", err))
-					errMu.Unlock()
-					return
-				}
-				now := time.Now().UTC()
-				handle.mu.Lock()
-				handle.votes[op.Name] = voteInfo{
-					Vote:   map[bool]string{true: "yes", false: "no"}[vote],
-					Reason: reason,
-					At:    now,
-				}
-				handle.mu.Unlock()
-
-				// Record the vote in the persistent log
-				voteStr := map[bool]string{true: "yes", false: "no"}[vote]
-				if err := c.log.RecordVote(context.Background(), handle.tx.ID, op.Name, voteStr, reason, now); err != nil {
-					log.Printf("failed to record vote for %s: %v", op.Name, err)
-					metrics.RecordError("record_vote_failed")
-					// Continue anyway; this is not fatal
-				}
-
-				// Record vote metric
-				metrics.RecordVote(op.Name, voteStr)
-
-				if !vote {
-					// Already recorded as "no" above
-					errMu.Lock()
-					prepareErrs = append(prepareErrs, fmt.Errorf("participant voted no: %s", reason))
-					errMu.Unlock()
-					return
-				}
-				// Success - no error to record
+		// Snapshot participants list to avoid data races if AddParticipant
+		// is called concurrently. Skip anyone who already has a recorded
+		// vote in handle.votes.
+		handle.mu.Lock()
+		participants := make([]ParticipantOp, 0, len(handle.participants))
+		for _, op := range handle.participants {
+			if _, hasVote := handle.votes[op.Name]; !hasVote {
+				participants = append(participants, op)
 			}
-		}(op)
+		}
+		snapshotLen := len(handle.participants)
+		handle.mu.Unlock()
+
+		// No new participants to ask, and no one is left without a vote —
+		// the next round would be a no-op. Decide here.
+		if len(participants) == 0 {
+			break
+		}
+
+		// Send prepare to all not-yet-voted participants concurrently.
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
+		var prepareErrs []error
+
+		for _, op := range participants {
+			wg.Add(1)
+			go func(op ParticipantOp) {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("panic in prepare for %s: %v", op.Name, r)
+						metrics.RecordError("prepare_panic")
+						errMu.Lock()
+						prepareErrs = append(prepareErrs, fmt.Errorf("panic in prepare for %s: %v", op.Name, r))
+						errMu.Unlock()
+					}
+				}()
+
+				select {
+				case <-handle.cancel:
+					errMu.Lock()
+					prepareErrs = append(prepareErrs, errors.New("cancelled"))
+					errMu.Unlock()
+					return
+				case <-timeoutCtx.Done():
+					errMu.Lock()
+					prepareErrs = append(prepareErrs, fmt.Errorf("prepare timeout"))
+					errMu.Unlock()
+					return
+				default:
+					vote, reason, err := op.Client.Prepare(timeoutCtx, handle.tx.ID, op.Action, op.Params)
+					if err != nil {
+						errMu.Lock()
+						prepareErrs = append(prepareErrs, fmt.Errorf("prepare error: %w", err))
+						errMu.Unlock()
+						return
+					}
+					now := time.Now().UTC()
+					voteStr := map[bool]string{true: "yes", false: "no"}[vote]
+					handle.mu.Lock()
+					handle.votes[op.Name] = voteInfo{
+						Vote:   voteStr,
+						Reason: reason,
+						At:     now,
+					}
+					handle.mu.Unlock()
+
+					// Record the vote in the persistent log. The log keeps
+					// the original vote (yes/no/timeout); the outcome
+					// (committed/aborted) is recorded separately.
+					if err := c.log.RecordVote(context.Background(), handle.tx.ID, op.Name, voteStr, reason, now); err != nil {
+						log.Printf("failed to record vote for %s: %v", op.Name, err)
+						metrics.RecordError("record_vote_failed")
+						// Continue anyway; this is not fatal
+					}
+
+					metrics.RecordVote(op.Name, voteStr)
+
+					if !vote {
+						errMu.Lock()
+						prepareErrs = append(prepareErrs, fmt.Errorf("participant voted no: %s", reason))
+						errMu.Unlock()
+						return
+					}
+				}
+			}(op)
+		}
+
+		wg.Wait()
+
+		if len(prepareErrs) > 0 {
+			log.Printf("prepare errors for tx %s: %v", handle.tx.ID, prepareErrs)
+			metrics.RecordError("prepare_errors")
+			c.abortTransaction(timeoutCtx, handle, "prepare-failure")
+			return
+		}
+
+			// Did participants list grow during this round? If so, loop and
+		// ask the new ones. Otherwise, we're done with prepare.
+		handle.mu.Lock()
+		grew := len(handle.participants) > snapshotLen
+		handle.mu.Unlock()
+		if !grew {
+			break
+		}
 	}
 
-	// Wait for all prepares to complete
-	wg.Wait()
+	// Grace window: after all current participants voted yes, wait briefly
+	// for any concurrent AddParticipant calls to register a new voter. If
+	// one arrives, restart the loop so the new participant gets a prepare
+	// round. This implements the spec's UC-7 contract — "Add a new
+	// participant to an in-progress transaction (only allowed in PREPARING
+	// state)" — without forcing clients to make an explicit Finalize call.
+	// The grace period is bounded by the transaction's own timeout budget.
+	const graceWindow = 200 * time.Millisecond
+graceLoop:
+	for {
+		// Did anyone add a participant after we exited the prepare loop?
+		// The snapshot was the last len before the loop broke; if the
+		// list has grown since, the new participant needs a vote.
+		handle.mu.Lock()
+		currentLen := len(handle.participants)
+		// Re-count who hasn't voted yet (defensive — the loop above
+		// should already cover this, but AddParticipant may have raced
+		// with the loop's exit decision).
+		unVoted := 0
+		for _, op := range handle.participants {
+			if _, ok := handle.votes[op.Name]; !ok {
+				unVoted++
+			}
+		}
+		handle.mu.Unlock()
+		if unVoted > 0 {
+			// A new participant was added after the loop. Go back to
+			// the top of the prepare loop and run another round.
+			for {
+				select {
+				case <-handle.cancel:
+					c.abortTransaction(timeoutCtx, handle, "cancelled-before-prepare")
+					return
+				default:
+				}
+				handle.mu.Lock()
+				participants := make([]ParticipantOp, 0, len(handle.participants))
+				for _, op := range handle.participants {
+					if _, hasVote := handle.votes[op.Name]; !hasVote {
+						participants = append(participants, op)
+					}
+				}
+				snapshotLen := len(handle.participants)
+				handle.mu.Unlock()
+				if len(participants) == 0 {
+					break
+				}
+				var wg sync.WaitGroup
+				var errMu sync.Mutex
+				var prepareErrs []error
+				for _, op := range participants {
+					wg.Add(1)
+					go func(op ParticipantOp) {
+						defer wg.Done()
+						select {
+						case <-handle.cancel:
+							errMu.Lock()
+							prepareErrs = append(prepareErrs, errors.New("cancelled"))
+							errMu.Unlock()
+							return
+						case <-timeoutCtx.Done():
+							errMu.Lock()
+							prepareErrs = append(prepareErrs, fmt.Errorf("prepare timeout"))
+							errMu.Unlock()
+							return
+						default:
+							vote, reason, err := op.Client.Prepare(timeoutCtx, handle.tx.ID, op.Action, op.Params)
+							if err != nil {
+								errMu.Lock()
+								prepareErrs = append(prepareErrs, fmt.Errorf("prepare error: %w", err))
+								errMu.Unlock()
+								return
+							}
+							now := time.Now().UTC()
+							voteStr := map[bool]string{true: "yes", false: "no"}[vote]
+							handle.mu.Lock()
+							handle.votes[op.Name] = voteInfo{Vote: voteStr, Reason: reason, At: now}
+							handle.mu.Unlock()
+							if err := c.log.RecordVote(context.Background(), handle.tx.ID, op.Name, voteStr, reason, now); err != nil {
+								log.Printf("failed to record vote for %s: %v", op.Name, err)
+							}
+							metrics.RecordVote(op.Name, voteStr)
+							if !vote {
+								errMu.Lock()
+								prepareErrs = append(prepareErrs, fmt.Errorf("participant voted no: %s", reason))
+								errMu.Unlock()
+								return
+							}
+						}
+					}(op)
+				}
+				wg.Wait()
+				if len(prepareErrs) > 0 {
+					c.abortTransaction(timeoutCtx, handle, "prepare-failure")
+					return
+				}
+				handle.mu.Lock()
+				grew := len(handle.participants) > snapshotLen
+				handle.mu.Unlock()
+				if !grew {
+					break
+				}
+			}
+			continue graceLoop
+		}
+		_ = currentLen
 
-	if len(prepareErrs) > 0 {
-		log.Printf("prepare errors for tx %s: %v", handle.tx.ID, prepareErrs)
-		metrics.RecordError("prepare_errors")
-		c.abortTransaction(ctx, handle, "prepare-failure")
+		// Wait for the grace window. Poll for new participants every 10ms;
+		// if one arrives, restart the grace window. If cancel fires, abort.
+		timer := time.NewTimer(graceWindow)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		graceDecided := false
+		for !graceDecided {
+			select {
+			case <-handle.cancel:
+				timer.Stop()
+				ticker.Stop()
+				c.abortTransaction(timeoutCtx, handle, "cancelled-during-grace")
+				return
+			case <-timer.C:
+				ticker.Stop()
+				graceDecided = true
+			case <-ticker.C:
+				// Re-check: did a new participant arrive? If so, the
+				// outer loop will restart the grace window.
+				handle.mu.Lock()
+				grew := false
+				for _, op := range handle.participants {
+					if _, ok := handle.votes[op.Name]; !ok {
+						grew = true
+						break
+					}
+				}
+				handle.mu.Unlock()
+				if grew {
+					timer.Stop()
+					ticker.Stop()
+					continue graceLoop
+				}
+			}
+		}
+		break graceLoop
+	}
+
+	// After grace: if cancel was signalled mid-flight, abort instead
+	// of commit. Prepare errors are already handled above; this catches the
+	// case where every prepare succeeded but the operator cancelled in the
+	// same window.
+	select {
+	case <-handle.cancel:
+		c.abortTransaction(timeoutCtx, handle, "cancelled-during-prepare")
 		return
+	default:
 	}
 
 	// All yes -> commit
 	c.transitionState(handle, StateCommitting)
-	c.commitTransaction(ctx, handle)
+	c.commitTransaction(timeoutCtx, handle)
 }
 
 // commitTransaction sends commit to all participants
@@ -438,8 +623,11 @@ func (c *Coordinator) commitTransaction(ctx context.Context, handle *txHandle) {
 				}
 				handle.mu.Unlock()
 
-				// Update vote record to mark as committed
-				if err := c.log.RecordVote(context.Background(), handle.tx.ID, op.Name, "committed", "", now); err != nil {
+				// Update persistent log: set the outcome timestamp only,
+				// keep the original vote (yes) intact. We use a separate
+				// outcome parameter so the votes.vote column doesn't get
+				// overwritten with "committed".
+				if err := c.log.RecordOutcome(context.Background(), handle.tx.ID, op.Name, "committed", now); err != nil {
 					log.Printf("failed to record commit for %s: %v", op.Name, err)
 					metrics.RecordError("record_commit_failed")
 				}
@@ -518,8 +706,11 @@ func (c *Coordinator) abortTransaction(ctx context.Context, handle *txHandle, re
 				}
 				handle.mu.Unlock()
 
-				// Update vote record to mark as aborted
-				if err := c.log.RecordVote(context.Background(), handle.tx.ID, op.Name, "aborted", "", now); err != nil {
+				// Update persistent log: set the outcome timestamp only,
+				// keep the original vote (yes) intact. We use a separate
+				// outcome parameter so the votes.vote column doesn't get
+				// overwritten with "aborted".
+				if err := c.log.RecordOutcome(context.Background(), handle.tx.ID, op.Name, "aborted", now); err != nil {
 					log.Printf("failed to record abort for %s: %v", op.Name, err)
 					metrics.RecordError("record_abort_failed")
 				}
@@ -535,11 +726,15 @@ func (c *Coordinator) abortTransaction(ctx context.Context, handle *txHandle, re
 
 	// Transition to ABORTED after all aborts sent
 	c.transitionState(handle, StateAborted)
+	// Use a fresh context for log writes — the passed-in ctx may be
+	// expired (e.g. when abort is triggered by a prepare timeout) and
+	// we still need to record the terminal state.
+	logCtx := context.Background()
 	if len(abortErrs) > 0 {
 		// Log but don't block
-		c.log.UpdateStatus(ctx, handle.tx.ID, string(StateAborted), nil, "abort-partial-failure", fmt.Sprintf("some aborts failed: %v", abortErrs))
+		c.log.UpdateStatus(logCtx, handle.tx.ID, string(StateAborted), nil, "abort-partial-failure", fmt.Sprintf("some aborts failed: %v", abortErrs))
 	} else {
-		c.log.UpdateStatus(ctx, handle.tx.ID, string(StateAborted), nil, reason, "")
+		c.log.UpdateStatus(logCtx, handle.tx.ID, string(StateAborted), nil, reason, "")
 	}
 }
 

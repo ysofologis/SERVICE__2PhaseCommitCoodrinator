@@ -34,6 +34,11 @@ type Log interface {
 	CreateTransaction(ctx context.Context, tx *Transaction) error
 	UpdateStatus(ctx context.Context, id string, status string, decisionAt *time.Time, decidedBy, errMsg string) error
 	RecordVote(ctx context.Context, txID, participant, vote, reason string, ts time.Time) error
+	// RecordOutcome sets the final outcome (committed/aborted) on an existing
+	// vote row without overwriting the votes.vote column. The vote column
+	// retains its original yes/no/timeout value; only the timestamp column
+	// matching the outcome is set.
+	RecordOutcome(ctx context.Context, txID, participant, outcome string, ts time.Time) error
 	GetTransaction(ctx context.Context, id string) (*TransactionWithVotes, error)
 	GetVotes(ctx context.Context, txID string) ([]Vote, error)
 	ListTransactions(ctx context.Context, limit, offset int) ([]TransactionWithVotes, error)

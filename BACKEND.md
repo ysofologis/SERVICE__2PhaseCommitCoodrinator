@@ -32,6 +32,8 @@ internal/
     sqlite.go             # SQLite implementation
   metrics/metrics.go      # Prometheus metrics
 web/templates/            # HTMX-powered frontend
+clients/                  # Sample participants — future implementations
+    PLAN.md               # Design doc: C# + Python trading-platform participants
 ```
 
 ---
@@ -298,7 +300,7 @@ The dashboard uses **HTMX** for progressive enhancement — traditional server-s
 ## Thread Safety Summary
 
 | Component | Protection |
-|-----------|-----------|
+|-----------|------------|
 | `Coordinator.mu` | RWMutex protecting `inFlight`, `participants`, `startTimes` maps |
 | `txHandle.mu` | RWMutex protecting `votes` map during parallel prepare/commit/abort |
 | SQLite connections | One `*sql.DB` instance; `modernc.org/sqlite` is thread-safe |
@@ -324,5 +326,45 @@ Known gaps:
 - Mock participants configurable per-test (vote yes/no/delay/fail)
 
 ---
+
+## Planned Clients: Concurrent Order Submission (Trading Platform)
+
+**See `clients/PLAN.md`** for the full specification.
+
+### Scenario
+
+Two end-users simultaneously submit buy orders for the same security (e.g., both buying AAPL). Without coordination, concurrent writes to the shared order-book tables can over-sell inventory (shadow-write race condition).
+
+### Architecture
+
+Both users' requests flow through the coordinator, which serializes them as a single 2PC transaction:
+
+```
+User A ──► intent ───┐
+                      ├─► Coordinator ◄─ serialize ─► 2PC
+User B ──► intent ───┘
+                         Prepare
+                        ┌────┴────┐
+                        ▼         ▼
+                   accounts-db   orderbook-db
+                   (C#/.NET)     (Python/FastAPI)
+                        │          │
+                        │ Vote yes/no
+                        └────┬────┘
+                     Commit / Abort
+```
+
+| Participant | Language | DB | Responsibility |
+|-------------|----------|----|----------------|
+| **accounts** | C# (.NET 8 + Dapper) | SQLite | Balance checks, fund holds |
+| **orderbook** | Python (FastAPI + aiosqlite) | SQLite | Share availability, order placement |
+
+### Key Mechanism
+
+- Each participant owns its own SQLite file (no shared DB at runtime)
+- During `/prepare`, participants write `write_locks` rows (tx-token → resource)
+- On `/commit`: apply in-memory deltas; on `/abort`: discard and release locks
+- External writes must check `write_locks` before modifying locked resources
+- This provides single-writer guarantee per resource across parallel HTTP endpoints
 
 <!-- project: /storage/drive-S/Work/SideProjects/2PhaseCommitAPI -->
