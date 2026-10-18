@@ -183,3 +183,49 @@ func TestTxStatus(t *testing.T) {
 func fromString(s string) io.ReadCloser {
 	return io.NopCloser(strings.NewReader(s))
 }
+
+func TestAdminReset(t *testing.T) {
+	s := NewParticipantServer()
+
+	// Mutate state: drain account A, prepare a transaction, mark
+	// another as committed. After /admin/reset, all of this should be
+	// gone and the ledger should be back to the initial seed.
+	s.mu.Lock()
+	s.ledger["A"] = 250 // drained from 10000
+	s.prepared["tx_in_flight"] = true
+	s.txStates["tx_in_flight"] = "prepared"
+	s.txStates["tx_done"] = "committed"
+	s.pendingDeltas["tx_in_flight"] = map[string]int64{"A": -9750}
+	s.mu.Unlock()
+
+	r := chi.NewRouter()
+	r.Post("/admin/reset", s.HandleAdminReset)
+	req := httptest.NewRequest("POST", "/admin/reset", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("expected 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if got := s.ledger["A"]; got != 10000 {
+		t.Errorf("ledger[A]: want 10000 (initial seed), got %d", got)
+	}
+	if got := s.ledger["B"]; got != 10000 {
+		t.Errorf("ledger[B]: want 10000 (initial seed), got %d", got)
+	}
+	if _, ok := s.prepared["tx_in_flight"]; ok {
+		t.Error("tx_in_flight should be removed from prepared set after reset")
+	}
+	if _, ok := s.txStates["tx_in_flight"]; ok {
+		t.Error("tx_in_flight should be removed from txStates after reset")
+	}
+	if _, ok := s.txStates["tx_done"]; ok {
+		t.Error("tx_done should be removed from txStates after reset")
+	}
+	if _, ok := s.pendingDeltas["tx_in_flight"]; ok {
+		t.Error("tx_in_flight pending deltas should be cleared after reset")
+	}
+}

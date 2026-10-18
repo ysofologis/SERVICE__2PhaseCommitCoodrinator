@@ -45,6 +45,12 @@ func (s *ParticipantServer) Routes() *chi.Mux {
 	r.Post("/commit", s.HandleCommit)
 	r.Post("/abort", s.HandleAbort)
 	r.Get("/tx/{id}", s.HandleTxStatus)
+	// Dev-only admin endpoint: reset the in-memory ledger, prepared
+	// set, and tx state to the initial seed. Used by the Avalonia
+	// client's "Race demo" to re-arm the demo after both transactions
+	// reach terminal state. In production this would be guarded by
+	// auth or removed entirely.
+	r.Post("/admin/reset", s.HandleAdminReset)
 	return r
 }
 
@@ -222,4 +228,39 @@ func (s *ParticipantServer) HandleTxStatus(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TxStatusResponse{Status: status})
+}
+
+// HandleAdminReset re-seeds the participant's in-memory state to the
+// initial demo values. It's a development convenience: after the
+// Avalonia Race Demo runs (which drains the inventory and one of the
+// accounts' balance), the demo modal can call this endpoint to put
+// the participant back to a known-good state for another run.
+//
+// The endpoint is intentionally unauthenticated because the
+// participant is itself a dev-only stub. In a real deployment it
+// would either be removed or guarded by an auth middleware.
+func (s *ParticipantServer) HandleAdminReset(w http.ResponseWriter, r *http.Request) {
+	s.prepareLock.Lock()
+	defer s.prepareLock.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Re-seed the ledger with the same initial values that
+	// NewParticipantServer uses, so the post-reset state is identical
+	// to a fresh participant.
+	s.ledger = map[string]int64{
+		"A": 10000,
+		"B": 10000,
+	}
+	s.prepared = make(map[string]bool)
+	s.txStates = make(map[string]string)
+	s.pendingDeltas = make(map[string]map[string]int64)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "reset",
+		"ledger": "A=10000,B=10000",
+	})
 }

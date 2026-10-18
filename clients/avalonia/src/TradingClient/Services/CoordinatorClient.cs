@@ -186,4 +186,24 @@ public sealed class CoordinatorClient : ICoordinatorClient
             return false;
         }
     }
+
+    public async Task<bool> ResetParticipantAsync(string participantBaseUrl, CancellationToken ct = default)
+    {
+        // The typed HttpClient's BaseAddress is bound to the coordinator.
+        // For the participant we have to construct a one-off HttpClient
+        // — this is rare (only called when the user clicks "Reset demo
+        // data" in the Dev tools drawer), so we don't worry about
+        // socket pooling here.
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri(participantBaseUrl), Timeout = TimeSpan.FromSeconds(5) };
+            var resp = await http.PostAsync("/admin/reset", new StringContent(""), ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "ResetParticipant({Url}) failed", participantBaseUrl);
+            return false;
+        }
+    }
 }

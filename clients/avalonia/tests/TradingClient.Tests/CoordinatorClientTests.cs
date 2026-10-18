@@ -147,6 +147,68 @@ public class CoordinatorClientTests
         Assert.True(await sut.CancelTransactionAsync("tx_1"));
     }
 
+    [Fact]
+    public async Task ResetParticipantAsync_returns_true_on_200()
+    {
+        // Spin up a real local HTTP listener that responds 200 to
+        // /admin/reset. The SUT's ResetParticipantAsync creates its
+        // own HttpClient and hits the given base URL; we can intercept
+        // it by binding to a free loopback port.
+        var listener = new System.Net.HttpListener();
+        var port = GetFreeTcpPort();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var serverTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (listener.IsListening)
+                {
+                    var ctx = await listener.GetContextAsync();
+                    Assert.Equal("POST", ctx.Request.HttpMethod);
+                    Assert.Equal("/admin/reset", ctx.Request.Url!.AbsolutePath);
+                    var bytes = System.Text.Encoding.UTF8.GetBytes("""{"status":"reset"}""");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.ContentLength64 = bytes.Length;
+                    await ctx.Response.OutputStream.WriteAsync(bytes);
+                    ctx.Response.Close();
+                }
+            }
+            catch (System.Net.HttpListenerException) { /* listener stopped */ }
+            catch (ObjectDisposedException) { /* listener stopped */ }
+        });
+
+        try
+        {
+            var sut = MakeClient(new StubHandler(_ => HttpResponse(HttpStatusCode.OK, "{}")));
+            var result = await sut.ResetParticipantAsync($"http://127.0.0.1:{port}");
+            Assert.True(result);
+        }
+        finally
+        {
+            listener.Stop();
+            listener.Close();
+            try { await serverTask; } catch { /* expected */ }
+        }
+    }
+
+    [Fact]
+    public async Task ResetParticipantAsync_returns_false_on_unreachable()
+    {
+        var sut = MakeClient(new StubHandler(_ => HttpResponse(HttpStatusCode.OK, "{}")));
+        // Port 1 is reserved/unused; connecting should fail quickly.
+        var result = await sut.ResetParticipantAsync("http://127.0.0.1:1");
+        Assert.False(result);
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        l.Start();
+        try { return ((System.Net.IPEndPoint)l.LocalEndpoint).Port; }
+        finally { l.Stop(); }
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     private static CoordinatorClient MakeClient(StubHandler handler)

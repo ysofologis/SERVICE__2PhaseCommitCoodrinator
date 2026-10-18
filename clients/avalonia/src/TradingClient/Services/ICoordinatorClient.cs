@@ -45,6 +45,20 @@ public interface ICoordinatorClient
     /// Calls <c>POST /transactions/{id}/cancel</c>. Returns true on 202.
     /// </summary>
     Task<bool> CancelTransactionAsync(string id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Calls the participant's dev-only <c>POST /admin/reset</c>
+    /// endpoint. Re-seeds the participant's in-memory state (ledger,
+    /// prepared set, tx state) to the initial demo values, so the
+    /// Race Demo modal can re-arm the participant after both
+    /// transactions reach terminal state.
+    ///
+    /// The Avalonia client calls this against the **participant's**
+    /// URL, not the coordinator's URL. The participant base URL is
+    /// derived from the coordinator URL (port +8081 and +8082 by
+    /// default) — see <see cref="ParticipantResetClient"/>.
+    /// </summary>
+    Task<bool> ResetParticipantAsync(string participantBaseUrl, CancellationToken ct = default);
 }
 
 public sealed record CreateTransactionResult(
