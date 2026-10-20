@@ -378,10 +378,14 @@ What to look for:
 - **What is 2PC and why does it matter here?** — see the top-level
   [`../../README.md`](../../README.md) and
   [`../../BACKEND.md`](../../BACKEND.md).
-- **The protocol spec** — see
-  [`../../user-tasks/2pc-service/USER-TASK.md`](../../user-tasks/2pc-service/USER-TASK.md)
-  for the full functional spec, the v2 acceptance criteria, and
-  the state-machine diagram.
+- **The protocol spec** — the full functional spec, the v2
+  acceptance criteria, and the state-machine diagram live in the
+  **workspace task folder**, not in this repo:
+  `Agents/openclaw-generalist/user-tasks/2pc-service/USER-TASK.md`
+  (a sibling of `Agents/nanobot-1/`, which is where it is tracked in
+  git). If you only have this repo cloned, start with
+  [`../../BACKEND.md`](../../BACKEND.md) §4 and §5 — they carry the
+  state machine, the API contract, and the participant protocol.
 - **The end-user scenario (race demo design)** — see
   [`../PLAN.md`](../PLAN.md), section 6.
 - **The Go code** — `internal/coord/coordinator.go` is the main
